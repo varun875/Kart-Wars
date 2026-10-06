@@ -32,6 +32,12 @@ public class MainMenuManager : MonoBehaviour
     {
         ShowMenuPanel();
 
+        if (!string.IsNullOrEmpty(ClientManager.DisconnectReason))
+        {
+            SetStatus(ClientManager.DisconnectReason, Color.red);
+            ClientManager.DisconnectReason = null;
+        }
+
         if (playerNameInput != null)
         {
             playerNameInput.text = "Racer" + Random.Range(1, 1000);

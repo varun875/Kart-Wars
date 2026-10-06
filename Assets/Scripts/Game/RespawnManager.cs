@@ -1,8 +1,9 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 
 /// <summary>
 /// Server-side respawn manager. Handles respawn positions, physics reset, health restore.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 public class RespawnManager : NetworkBehaviour
 {
@@ -55,14 +56,14 @@ public class RespawnManager : NetworkBehaviour
     /// <summary>
     /// Respawn a player at a spawn point (server only)
     /// </summary>
-    [Server]
     public void RespawnPlayer(GameObject playerObject)
     {
+        if (!IsServer) return;
         if (playerObject == null) return;
 
         Transform spawn = GetSpawnPoint();
-        Vector3 pos = spawn.position;
-        Quaternion rot = spawn.rotation;
+        Vector3 pos = spawn != null ? spawn.position : playerObject.transform.position;
+        Quaternion rot = spawn != null ? spawn.rotation : playerObject.transform.rotation;
 
         // Reset physics
         Rigidbody rb = playerObject.GetComponent<Rigidbody>();
@@ -91,20 +92,31 @@ public class RespawnManager : NetworkBehaviour
             kart.ResetVehicle();
             kart.EnableControls();
         }
+
+        var invuln = playerObject.GetComponent<TemporaryInvulnerability>();
+        if (invuln != null)
+        {
+            invuln.StartInvulnerability(invulnerabilityDuration);
+        }
     }
 
     /// <summary>
     /// Request respawn from client
     /// </summary>
-    [Command(requiresAuthority = false)]
-    public void CmdRequestRespawn(NetworkConnectionToClient sender = null)
+    [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
+    public void RequestRespawnServerRpc(RpcParams rpcParams = default)
     {
-        if (sender == null || sender.identity == null) return;
-        
-        PlayerHealth health = sender.identity.GetComponent<PlayerHealth>();
-        if (health != null && health.IsDead)
+        ulong senderClientId = rpcParams.Receive.SenderClientId;
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.ConnectedClients.TryGetValue(senderClientId, out var client))
         {
-            RespawnPlayer(sender.identity.gameObject);
+            if (client.PlayerObject != null)
+            {
+                PlayerHealth health = client.PlayerObject.GetComponent<PlayerHealth>();
+                if (health != null && health.IsDead)
+                {
+                    RespawnPlayer(client.PlayerObject.gameObject);
+                }
+            }
         }
     }
 

@@ -1,0 +1,17 @@
+{
+    "name": "UniversityOfGames.ProgressBarToolkit.Demo",
+    "rootNamespace": "UniversityOfGames.ProgressBarToolkit.Demo",
+    "references": [
+        "UniversityOfGames.ProgressBarToolkit",
+        "UnityEngine.UI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

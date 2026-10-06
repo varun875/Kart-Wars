@@ -1,59 +1,83 @@
-﻿using System.Collections;
-using System.Collections.Generic;
+// -----------------------------------------------------------------------------
+// 2D Progress Bar Toolkit
+// © University of Games
+// -----------------------------------------------------------------------------
+
 using UnityEngine;
 using UnityEngine.UI;
 
-public class ClassicProgressBar : MonoBehaviour {
-	[Header("Colors")]
-	[SerializeField] private Color m_MainColor = Color.white;
-	[SerializeField] private Color m_FillColor = Color.green;
-	
-	[Header("General")]
-	[SerializeField] private int m_NumberOfSegments = 5;
-	[SerializeField] private float m_SizeOfNotch = 5;
-	[Range(0, 1f)] [SerializeField] private float m_FillAmount = 0.0f;
+namespace UniversityOfGames.ProgressBarToolkit
+{
+    /// <summary>
+    /// A horizontal progress bar that lays its segments out in a row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The row is centered on the component's <see cref="RectTransform"/> and spans
+    /// its width exactly: the width of a single segment is
+    /// <c>(barWidth - (n - 1) * notch) / n</c>. Resize the bar's rect (or let it
+    /// stretch with its parent) and call <see cref="SegmentedProgressBar.Rebuild"/>
+    /// to re-layout at the new size.
+    /// </para>
+    /// <para>
+    /// The segment template keeps its authored vertical anchoring — a template that
+    /// stretches to the bar's height keeps stretching on every segment — while the
+    /// horizontal axis is managed by the layout. The fill image is expected to be a
+    /// <see cref="Image.Type.Filled"/> image using <i>Horizontal</i> fill.
+    /// </para>
+    /// </remarks>
+    [AddComponentMenu("UI/2D Progress Bar Toolkit/Classic Progress Bar")]
+    public sealed class ClassicProgressBar : SegmentedProgressBar
+    {
+        /// <summary>Width of a single segment in local units; cached by <see cref="OnBeforeBuild"/>.</summary>
+        private float m_SegmentWidth;
 
-	private RectTransform m_RectTransform;
-	private Image m_Image;
-	private List<Image> m_ProgressToFill = new List<Image> ();
-	private float m_SizeOfSegment;
+        #region SegmentedProgressBar implementation
 
-	public void Awake() {
-		// get rect transform
-		m_RectTransform = GetComponent<RectTransform> ();
-		
-		// get image
-		m_Image = GetComponentInChildren<Image>();
-		m_Image.color = m_MainColor;
-		m_Image.gameObject.SetActive(false);
+        protected override void OnBeforeBuild(int segmentCount)
+        {
+            // rect.width respects stretched anchors, unlike sizeDelta.
+            float barWidth = ((RectTransform)transform).rect.width;
+            m_SegmentWidth = (barWidth - (segmentCount - 1) * SizeOfNotch) / segmentCount;
+        }
 
-		// count size of segments
-		m_SizeOfSegment = m_RectTransform.sizeDelta.x / m_NumberOfSegments;		
-		for (int i = 0; i < m_NumberOfSegments; i++) {
-			GameObject currentSegment = Instantiate(m_Image.gameObject, transform.position, Quaternion.identity, transform);
-			currentSegment.SetActive(true);
+        protected override void LayoutSegment(Image background, Image fill, int index)
+        {
+            RectTransform backgroundRect = background.rectTransform;
 
-			Image segmentImage = currentSegment.GetComponent<Image>();
-			segmentImage.fillAmount = m_SizeOfSegment;
+            // Segments are centered horizontally with explicit offsets, but the vertical
+            // anchoring is left exactly as authored on the template — a template that
+            // stretches to the bar's height keeps doing so on every segment.
+            Vector2 anchorMin = backgroundRect.anchorMin;
+            Vector2 anchorMax = backgroundRect.anchorMax;
+            anchorMin.x = 0.5f;
+            anchorMax.x = 0.5f;
+            backgroundRect.anchorMin = anchorMin;
+            backgroundRect.anchorMax = anchorMax;
 
-			RectTransform segmentRectTransform = segmentImage.GetComponent<RectTransform>();
-			segmentRectTransform.sizeDelta = new Vector2(m_SizeOfSegment, segmentRectTransform.sizeDelta.y);
-			segmentRectTransform.position += (Vector3.right * i * m_SizeOfSegment) - (Vector3.right * m_SizeOfSegment * (m_NumberOfSegments / 2)) + (Vector3.right * i * m_SizeOfNotch);
+            Vector2 pivot = backgroundRect.pivot;
+            pivot.x = 0.5f;
+            backgroundRect.pivot = pivot;
 
-			Image segmentFillImage = segmentImage.transform.GetChild (0).GetComponent<Image> ();
-			segmentFillImage.color = m_FillColor;
-			m_ProgressToFill.Add (segmentFillImage);
-			segmentFillImage.transform.GetComponent<RectTransform> ().sizeDelta = new Vector2(m_SizeOfSegment, segmentFillImage.GetComponent<RectTransform>().sizeDelta.y);
-		}
-	}
+            Vector2 size = backgroundRect.sizeDelta;
+            size.x = m_SegmentWidth;
+            backgroundRect.sizeDelta = size;
 
-	public void Update() {
-		for (int i = 0; i < m_NumberOfSegments; i++) {
-			m_ProgressToFill[i].fillAmount = m_NumberOfSegments * m_FillAmount - i;
-		}
-	}
+            Vector2 position = backgroundRect.anchoredPosition;
+            position.x = (index - (NumberOfSegments - 1) * 0.5f) * (m_SegmentWidth + SizeOfNotch);
+            backgroundRect.anchoredPosition = position;
 
-	private float ConvertFragmentToWidth(float fragment) {
-		return m_RectTransform.sizeDelta.x * fragment;
-	}
+            // Fills that stretch with their parent resize automatically; only explicitly
+            // sized fills need their width updated to the new segment width.
+            RectTransform fillRect = fill.rectTransform;
+            if (fillRect.anchorMin.x == fillRect.anchorMax.x)
+            {
+                Vector2 fillSize = fillRect.sizeDelta;
+                fillSize.x = m_SegmentWidth;
+                fillRect.sizeDelta = fillSize;
+            }
+        }
+
+        #endregion
+    }
 }

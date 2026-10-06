@@ -1,13 +1,13 @@
 using UnityEngine;
 using UnityEngine.UI;
-using Mirror;
+using Unity.Netcode;
 using TMPro;
 using System.Collections.Generic;
 using System.Linq;
 
 /// <summary>
-/// Server-authoritative game manager. Tracks match timer, scores via SyncDictionary,
-/// and game-over UI via ClientRpc.
+/// Server-authoritative game master. Tracks match timer, scores,
+/// and game-over UI via NGO RPCs.
 /// </summary>
 public class MirrorGameMaster : NetworkBehaviour
 {
@@ -31,25 +31,34 @@ public class MirrorGameMaster : NetworkBehaviour
     [SerializeField] private AudioClip countdownSound;
 
     // Synced game state
-    [SyncVar(hook = nameof(OnMatchTimeChanged))]
-    private float matchTimeRemaining;
+    private readonly NetworkVariable<float> matchTimeRemaining = new NetworkVariable<float>(
+        300f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar(hook = nameof(OnGameStateChanged))]
-    private GameState currentGameState = GameState.WaitingForPlayers;
+    private readonly NetworkVariable<GameState> currentGameState = new NetworkVariable<GameState>(
+        GameState.WaitingForPlayers,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar]
-    private uint winnerNetId;
+    private readonly NetworkVariable<ulong> winnerClientId = new NetworkVariable<ulong>(
+        0,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    // Player scores dictionary - synced across network
-    private readonly SyncDictionary<uint, PlayerScoreData> playerScores = new SyncDictionary<uint, PlayerScoreData>();
+    // Player scores tracking on server
+    private readonly Dictionary<ulong, PlayerScoreData> playerScores = new Dictionary<ulong, PlayerScoreData>();
 
     // Events
     public event System.Action<GameState> OnGameStateChangedEvent;
-    public event System.Action<uint, int> OnPlayerScoreChanged;
+    public event System.Action<ulong, int> OnPlayerScoreChanged;
 
-    public GameState CurrentGameState => currentGameState;
-    public float MatchTimeRemaining => matchTimeRemaining;
-    public IReadOnlyDictionary<uint, PlayerScoreData> PlayerScores => playerScores;
+    public GameState CurrentGameState => currentGameState.Value;
+    public float MatchTimeRemaining => matchTimeRemaining.Value;
+    public IReadOnlyDictionary<ulong, PlayerScoreData> PlayerScores => playerScores;
 
     public enum GameState
     {
@@ -86,28 +95,32 @@ public class MirrorGameMaster : NetworkBehaviour
         Instance = this;
     }
 
-    public override void OnStartServer()
+    public override void OnNetworkSpawn()
     {
-        base.OnStartServer();
-        matchTimeRemaining = matchDuration;
-        playerScores.OnChange += OnPlayerScoresUpdated;
-    }
+        base.OnNetworkSpawn();
 
-    public override void OnStartClient()
-    {
-        base.OnStartClient();
-        playerScores.OnChange += OnPlayerScoresUpdated;
-        
-        // Hide game over panel initially
+        currentGameState.OnValueChanged += OnStateChanged;
+
+        if (IsServer)
+        {
+            matchTimeRemaining.Value = matchDuration;
+        }
+
         if (gameOverPanel != null)
         {
             gameOverPanel.SetActive(false);
         }
     }
 
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        currentGameState.OnValueChanged -= OnStateChanged;
+    }
+
     private void Update()
     {
-        if (isServer)
+        if (IsServer)
         {
             ServerUpdate();
         }
@@ -115,10 +128,9 @@ public class MirrorGameMaster : NetworkBehaviour
         UpdateTimerUI();
     }
 
-    [Server]
     private void ServerUpdate()
     {
-        switch (currentGameState)
+        switch (currentGameState.Value)
         {
             case GameState.WaitingForPlayers:
                 CheckPlayersReady();
@@ -131,40 +143,36 @@ public class MirrorGameMaster : NetworkBehaviour
         }
     }
 
-    [Server]
     private void CheckPlayersReady()
     {
-        // Check if we have enough players to start
-        int playerCount = NetworkServer.connections.Count;
-        if (playerCount >= 1) // Adjust minimum players as needed
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.ConnectedClients.Count >= 1)
         {
             StartCountdown();
         }
     }
 
-    [Server]
     public void StartCountdown()
     {
-        currentGameState = GameState.Countdown;
+        if (!IsServer) return;
+        currentGameState.Value = GameState.Countdown;
         StartCoroutine(CountdownCoroutine());
     }
 
-    [Server]
     private System.Collections.IEnumerator CountdownCoroutine()
     {
-        RpcShowCountdown(3);
+        ShowCountdownClientRpc(3);
         yield return new WaitForSeconds(1f);
-        RpcShowCountdown(2);
+        ShowCountdownClientRpc(2);
         yield return new WaitForSeconds(1f);
-        RpcShowCountdown(1);
+        ShowCountdownClientRpc(1);
         yield return new WaitForSeconds(1f);
-        RpcShowCountdown(0); // GO!
+        ShowCountdownClientRpc(0); // GO!
         
         StartMatch();
     }
 
     [ClientRpc]
-    private void RpcShowCountdown(int count)
+    private void ShowCountdownClientRpc(int count)
     {
         if (timerText != null)
         {
@@ -186,26 +194,24 @@ public class MirrorGameMaster : NetworkBehaviour
         }
     }
 
-    [Server]
     private void StartMatch()
     {
-        currentGameState = GameState.Playing;
-        matchTimeRemaining = matchDuration;
+        if (!IsServer) return;
+        currentGameState.Value = GameState.Playing;
+        matchTimeRemaining.Value = matchDuration;
 
-        // Enable all player controls
-        RpcEnablePlayerControls();
+        EnablePlayerControlsClientRpc();
     }
 
     [ClientRpc]
-    private void RpcEnablePlayerControls()
+    private void EnablePlayerControlsClientRpc()
     {
         if (timerText != null)
         {
             timerText.fontSize = 36;
         }
 
-        // Find local player and enable controls
-        var localPlayer = NetworkClient.localPlayer;
+        var localPlayer = NetworkManager.Singleton != null ? NetworkManager.Singleton.LocalClient?.PlayerObject : null;
         if (localPlayer != null)
         {
             var kartController = localPlayer.GetComponent<MirrorKartController>();
@@ -216,21 +222,19 @@ public class MirrorGameMaster : NetworkBehaviour
         }
     }
 
-    [Server]
     private void UpdateMatchTimer()
     {
         if (!useTimeLimit) return;
 
-        matchTimeRemaining -= Time.deltaTime;
+        matchTimeRemaining.Value -= Time.deltaTime;
         
-        if (matchTimeRemaining <= 0)
+        if (matchTimeRemaining.Value <= 0)
         {
-            matchTimeRemaining = 0;
+            matchTimeRemaining.Value = 0;
             EndMatch();
         }
     }
 
-    [Server]
     private void CheckWinConditions()
     {
         if (!useScoreLimit) return;
@@ -239,42 +243,38 @@ public class MirrorGameMaster : NetworkBehaviour
         {
             if (kvp.Value.score >= scoreToWin)
             {
-                winnerNetId = kvp.Key;
+                winnerClientId.Value = kvp.Key;
                 EndMatch();
                 return;
             }
         }
     }
 
-    [Server]
     public void EndMatch()
     {
-        if (currentGameState == GameState.GameOver) return;
+        if (!IsServer) return;
+        if (currentGameState.Value == GameState.GameOver) return;
 
-        currentGameState = GameState.GameOver;
+        currentGameState.Value = GameState.GameOver;
 
-        // Determine winner if not already set
-        if (winnerNetId == 0 && playerScores.Count > 0)
+        if (winnerClientId.Value == 0 && playerScores.Count > 0)
         {
             var winner = playerScores.OrderByDescending(x => x.Value.score).First();
-            winnerNetId = winner.Key;
+            winnerClientId.Value = winner.Key;
         }
 
-        // Get winner name
         string winnerName = "Nobody";
-        if (playerScores.TryGetValue(winnerNetId, out PlayerScoreData winnerData))
+        if (playerScores.TryGetValue(winnerClientId.Value, out PlayerScoreData winnerData))
         {
             winnerName = winnerData.playerName;
         }
 
-        // Notify all clients
-        RpcShowGameOver(winnerName);
+        ShowGameOverClientRpc(winnerName);
     }
 
     [ClientRpc]
-    private void RpcShowGameOver(string winnerName)
+    private void ShowGameOverClientRpc(string winnerName)
     {
-        // Show game over UI
         if (gameOverPanel != null)
         {
             gameOverPanel.SetActive(true);
@@ -290,8 +290,7 @@ public class MirrorGameMaster : NetworkBehaviour
             AudioSource.PlayClipAtPoint(gameOverSound, Camera.main != null ? Camera.main.transform.position : Vector3.zero);
         }
 
-        // Disable player controls
-        var localPlayer = NetworkClient.localPlayer;
+        var localPlayer = NetworkManager.Singleton != null ? NetworkManager.Singleton.LocalClient?.PlayerObject : null;
         if (localPlayer != null)
         {
             var kartController = localPlayer.GetComponent<MirrorKartController>();
@@ -301,17 +300,16 @@ public class MirrorGameMaster : NetworkBehaviour
             }
         }
 
-        // Update scoreboard
         UpdateScoreboardUI();
     }
 
     private void UpdateTimerUI()
     {
         if (timerText == null) return;
-        if (currentGameState != GameState.Playing) return;
+        if (currentGameState.Value != GameState.Playing) return;
 
-        int minutes = Mathf.FloorToInt(matchTimeRemaining / 60f);
-        int seconds = Mathf.FloorToInt(matchTimeRemaining % 60f);
+        int minutes = Mathf.FloorToInt(matchTimeRemaining.Value / 60f);
+        int seconds = Mathf.FloorToInt(matchTimeRemaining.Value % 60f);
         timerText.text = $"{minutes:00}:{seconds:00}";
     }
 
@@ -319,16 +317,13 @@ public class MirrorGameMaster : NetworkBehaviour
     {
         if (scoreboardContainer == null || scoreEntryPrefab == null) return;
 
-        // Clear existing entries
         foreach (Transform child in scoreboardContainer)
         {
             Destroy(child.gameObject);
         }
 
-        // Sort players by score
         var sortedScores = playerScores.OrderByDescending(x => x.Value.score).ToList();
 
-        // Create entries
         foreach (var kvp in sortedScores)
         {
             GameObject entry = Instantiate(scoreEntryPrefab, scoreboardContainer);
@@ -344,122 +339,72 @@ public class MirrorGameMaster : NetworkBehaviour
         }
     }
 
-    #region Score Management
-
-    [Server]
-    public void RegisterPlayer(NetworkIdentity playerIdentity, string playerName)
+    public void RegisterPlayer(ulong clientId, string playerName)
     {
-        if (!playerScores.ContainsKey(playerIdentity.netId))
+        if (!IsServer) return;
+        if (!playerScores.ContainsKey(clientId))
         {
-            playerScores[playerIdentity.netId] = new PlayerScoreData(playerName);
+            playerScores[clientId] = new PlayerScoreData(playerName);
         }
     }
 
-    [Server]
-    public void UnregisterPlayer(NetworkIdentity playerIdentity)
+    public void UnregisterPlayer(ulong clientId)
     {
-        if (playerScores.ContainsKey(playerIdentity.netId))
+        if (!IsServer) return;
+        if (playerScores.ContainsKey(clientId))
         {
-            playerScores.Remove(playerIdentity.netId);
+            playerScores.Remove(clientId);
         }
     }
 
-    [Server]
-    public void AddKill(uint killerNetId, uint victimNetId)
+    public void AddKill(ulong killerId, ulong victimId)
     {
-        // Update killer stats
-        if (playerScores.TryGetValue(killerNetId, out PlayerScoreData killerData))
+        if (!IsServer) return;
+
+        if (playerScores.TryGetValue(killerId, out PlayerScoreData killerData))
         {
             killerData.kills++;
             killerData.score++;
-            playerScores[killerNetId] = killerData;
+            playerScores[killerId] = killerData;
+            OnPlayerScoreChanged?.Invoke(killerId, killerData.score);
         }
 
-        // Update victim stats
-        if (playerScores.TryGetValue(victimNetId, out PlayerScoreData victimData))
+        if (playerScores.TryGetValue(victimId, out PlayerScoreData victimData))
         {
             victimData.deaths++;
-            playerScores[victimNetId] = victimData;
+            playerScores[victimId] = victimData;
         }
     }
 
-    [Server]
-    public void AddScore(uint playerNetId, int points)
+    public void AddKill(uint killerId, uint victimId) => AddKill((ulong)killerId, (ulong)victimId);
+
+    public void AddScore(ulong clientId, int points)
     {
-        if (playerScores.TryGetValue(playerNetId, out PlayerScoreData data))
+        if (!IsServer) return;
+        if (playerScores.TryGetValue(clientId, out PlayerScoreData data))
         {
             data.score += points;
-            playerScores[playerNetId] = data;
+            playerScores[clientId] = data;
+            OnPlayerScoreChanged?.Invoke(clientId, data.score);
         }
     }
 
-    [Server]
-    public void AddDeath(uint playerNetId)
-    {
-        if (playerScores.TryGetValue(playerNetId, out PlayerScoreData data))
-        {
-            data.deaths++;
-            playerScores[playerNetId] = data;
-        }
-    }
+    public void AddScore(uint clientId, int points) => AddScore((ulong)clientId, points);
 
-    private void OnPlayerScoresUpdated(SyncDictionary<uint, PlayerScoreData>.Operation op, uint key, PlayerScoreData item)
-    {
-        OnPlayerScoreChanged?.Invoke(key, item.score);
-        
-        // Update UI if game is over
-        if (currentGameState == GameState.GameOver)
-        {
-            UpdateScoreboardUI();
-        }
-    }
-
-    public int GetPlayerScore(uint netId)
-    {
-        if (playerScores.TryGetValue(netId, out PlayerScoreData data))
-        {
-            return data.score;
-        }
-        return 0;
-    }
-
-    public PlayerScoreData? GetPlayerData(uint netId)
-    {
-        if (playerScores.TryGetValue(netId, out PlayerScoreData data))
-        {
-            return data;
-        }
-        return null;
-    }
-
-    #endregion
-
-    #region Hook Callbacks
-
-    private void OnMatchTimeChanged(float oldTime, float newTime)
-    {
-        // Timer UI is updated in Update()
-    }
-
-    private void OnGameStateChanged(GameState oldState, GameState newState)
+    private void OnStateChanged(GameState oldState, GameState newState)
     {
         OnGameStateChangedEvent?.Invoke(newState);
-
         Debug.Log($"[MirrorGameMaster] Game state changed: {oldState} -> {newState}");
     }
 
-    #endregion
-
-    #region Utility Methods
-
-    [Server]
     public void RestartMatch()
     {
-        currentGameState = GameState.WaitingForPlayers;
-        matchTimeRemaining = matchDuration;
-        winnerNetId = 0;
+        if (!IsServer) return;
 
-        // Reset all scores
+        currentGameState.Value = GameState.WaitingForPlayers;
+        matchTimeRemaining.Value = matchDuration;
+        winnerClientId.Value = 0;
+
         var keys = playerScores.Keys.ToList();
         foreach (var key in keys)
         {
@@ -472,30 +417,27 @@ public class MirrorGameMaster : NetworkBehaviour
             }
         }
 
-        // Respawn all players
         RespawnManager respawnManager = FindAnyObjectByType<RespawnManager>();
-        if (respawnManager != null)
+        if (respawnManager != null && NetworkManager.Singleton != null)
         {
-            foreach (var conn in NetworkServer.connections.Values)
+            foreach (var client in NetworkManager.Singleton.ConnectedClients.Values)
             {
-                if (conn.identity != null)
+                if (client.PlayerObject != null)
                 {
-                    respawnManager.RespawnPlayer(conn.identity.gameObject);
+                    respawnManager.RespawnPlayer(client.PlayerObject.gameObject);
                 }
             }
         }
 
-        RpcHideGameOver();
+        HideGameOverClientRpc();
     }
 
     [ClientRpc]
-    private void RpcHideGameOver()
+    private void HideGameOverClientRpc()
     {
         if (gameOverPanel != null)
         {
             gameOverPanel.SetActive(false);
         }
     }
-
-    #endregion
 }

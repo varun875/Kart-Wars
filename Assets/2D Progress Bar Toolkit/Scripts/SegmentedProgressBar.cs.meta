@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 86b09413c82a446dae463a840f0ced0f
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 87620
+  packageName: Progress Bar Kit
+  packageVersion: 5.0
+  assetPath: Assets/2D Progress Bar Toolkit/Scripts/SegmentedProgressBar.cs
+  uploadId: 966816

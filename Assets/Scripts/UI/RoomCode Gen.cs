@@ -1,6 +1,5 @@
 using UnityEngine;
 using UnityEngine.UI;
-using Mirror;
 using System.Collections.Generic;
 
 public class RoomCodeGen : MonoBehaviour
@@ -15,7 +14,6 @@ public class RoomCodeGen : MonoBehaviour
     public int codeLength = 6;
 
     private string currentRoomCode;
-    private static Dictionary<string, string> roomCodeToIP = new Dictionary<string, string>();
 
     private const string CHARACTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -26,7 +24,8 @@ public class RoomCodeGen : MonoBehaviour
             code[i] = CHARACTERS[Random.Range(0, CHARACTERS.Length)];
 
         currentRoomCode = new string(code);
-        roomCodeDisplay.text = "Room Code: " + currentRoomCode;
+        if (roomCodeDisplay != null)
+            roomCodeDisplay.text = "Room Code: " + currentRoomCode;
         Debug.Log("Generated Code: " + currentRoomCode);
     }
 
@@ -34,40 +33,28 @@ public class RoomCodeGen : MonoBehaviour
     {
         if (string.IsNullOrEmpty(currentRoomCode))
         {
-            roomCodeDisplay.text = "Generate a code first!";
+            if (roomCodeDisplay != null)
+                roomCodeDisplay.text = "Generate a code first!";
             return;
         }
 
-        string localIP = GetLocalIP();
-        roomCodeToIP[currentRoomCode] = localIP;
-
-        NetworkManager.singleton.networkAddress = localIP;
-        NetworkManager.singleton.StartHost();
-
-        roomCodeDisplay.text = "Hosting: " + currentRoomCode;
-        Debug.Log($"Hosting with code: {currentRoomCode} on IP: {localIP}");
+        if (HostManager.Instance != null)
+        {
+            HostManager.Instance.StartHostAndLoadGameScene();
+        }
     }
 
     public void CopyCodeToClipboard()
     {
         if (string.IsNullOrEmpty(currentRoomCode))
         {
-            roomCodeDisplay.text = "No code to copy!";
+            if (roomCodeDisplay != null)
+                roomCodeDisplay.text = "No code to copy!";
             return;
         }
 
         GUIUtility.systemCopyBuffer = currentRoomCode;
-        roomCodeDisplay.text = "Copied: " + currentRoomCode;
-    }
-
-    private string GetLocalIP()
-    {
-        var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-        foreach (var ip in host.AddressList)
-        {
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                return ip.ToString();
-        }
-        return "127.0.0.1";
+        if (roomCodeDisplay != null)
+            roomCodeDisplay.text = "Copied: " + currentRoomCode;
     }
 }

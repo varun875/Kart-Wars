@@ -1,95 +1,107 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using Mirror;
+using Unity.Netcode;
 
 /// <summary>
-/// UI display for current weapon (2D icon or 3D preview), optional world-space follow.
+/// Weapon UI display supporting both 2D HUD and 3D floating icons above kart.
+/// Shows current weapon icon, ammo count, and weapon pickup animations.
 /// </summary>
 public class WeaponUIDisplay : MonoBehaviour
 {
-    [Header("UI Mode")]
-    [SerializeField] private DisplayMode displayMode = DisplayMode.Icon2D;
-    [SerializeField] private bool followLocalPlayer = true;
-    [SerializeField] private Vector3 worldSpaceOffset = new Vector3(0, 2f, 0);
+    [Header("Display Mode")]
+    [SerializeField] private DisplayMode mode = DisplayMode.TwoDimensionalHUD;
+    [SerializeField] private bool autoFindLocalKart = true;
 
-    [Header("2D Icon References")]
+    [Header("2D HUD Elements")]
     [SerializeField] private Image weaponIcon;
     [SerializeField] private TextMeshProUGUI ammoText;
     [SerializeField] private Image backgroundImage;
+    [SerializeField] private Color activeColor = Color.white;
+    [SerializeField] private Color emptyColor = new Color(1f, 1f, 1f, 0.3f);
 
-    [Header("2D Icons")]
+    [Header("Weapon Sprites (2D)")]
     [SerializeField] private Sprite boomerangIcon;
     [SerializeField] private Sprite mineIcon;
     [SerializeField] private Sprite emptyIcon;
 
-    [Header("3D Preview")]
-    [SerializeField] private Transform previewContainer;
+    [Header("3D Floating Elements")]
+    [SerializeField] private Transform floatingContainer;
+    [SerializeField] private Vector3 worldSpaceOffset = new Vector3(0, 2f, 0);
     [SerializeField] private GameObject boomerangPreviewPrefab;
     [SerializeField] private GameObject minePreviewPrefab;
-    [SerializeField] private float previewRotationSpeed = 45f;
+    [SerializeField] private float rotationSpeed = 90f;
+    [SerializeField] private float floatSpeed = 2f;
+    [SerializeField] private float floatAmount = 0.2f;
 
-    [Header("Colors")]
-    [SerializeField] private Color activeColor = Color.white;
-    [SerializeField] private Color emptyColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
-
-    [Header("Animation")]
-    [SerializeField] private float pulseSpeed = 2f;
+    [Header("Animation Settings")]
+    [SerializeField] private float pulseSpeed = 3f;
     [SerializeField] private float pulseAmount = 0.1f;
+    [SerializeField] private AudioClip weaponSwitchSound;
 
     public enum DisplayMode
     {
-        Icon2D,
-        Preview3D
+        TwoDimensionalHUD,
+        ThreeDimensionalFloating,
+        Both
     }
 
     private MirrorKartController localKart;
     private GameObject current3DPreview;
     private MirrorKartController.WeaponType lastWeapon = MirrorKartController.WeaponType.None;
     private int lastAmmo = 0;
-    private Canvas canvas;
-    private RectTransform rectTransform;
+    private AudioSource audioSource;
+    private Vector3 initialFloatingPos;
 
     private void Awake()
     {
-        canvas = GetComponentInParent<Canvas>();
-        rectTransform = GetComponent<RectTransform>();
+        audioSource = GetComponent<AudioSource>();
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<AudioSource>();
+        }
+
+        if (floatingContainer != null)
+        {
+            initialFloatingPos = floatingContainer.localPosition;
+        }
+
+        UpdateDisplay(MirrorKartController.WeaponType.None, 0);
     }
 
     private void Start()
     {
-        UpdateDisplay(MirrorKartController.WeaponType.None, 0);
+        if (autoFindLocalKart)
+        {
+            FindLocalKart();
+        }
     }
 
     private void Update()
     {
-        FindLocalKart();
-
-        if (localKart != null)
+        if (localKart == null && autoFindLocalKart)
         {
-            var weapon = localKart.CurrentWeapon;
-            int ammo = GetCurrentAmmo();
-
-            if (weapon != lastWeapon || ammo != lastAmmo)
-            {
-                lastWeapon = weapon;
-                lastAmmo = ammo;
-                UpdateDisplay(weapon, ammo);
-            }
+            FindLocalKart();
+            return;
         }
 
-        // Rotate 3D preview
-        if (current3DPreview != null && displayMode == DisplayMode.Preview3D)
+        if (localKart == null) return;
+
+        // Check for weapon or ammo changes
+        var currentWeapon = localKart.CurrentWeapon;
+        int currentAmmo = GetCurrentAmmo();
+
+        if (currentWeapon != lastWeapon || currentAmmo != lastAmmo)
         {
-            current3DPreview.transform.Rotate(Vector3.up, previewRotationSpeed * Time.deltaTime);
+            UpdateDisplay(currentWeapon, currentAmmo);
+            lastWeapon = currentWeapon;
+            lastAmmo = currentAmmo;
         }
 
-        // World space follow
-        if (followLocalPlayer && localKart != null && canvas != null && canvas.renderMode == RenderMode.WorldSpace)
+        // Animate 3D preview
+        if (mode == DisplayMode.ThreeDimensionalFloating || mode == DisplayMode.Both)
         {
-            transform.position = localKart.transform.position + worldSpaceOffset;
-            transform.LookAt(Camera.main.transform);
-            transform.Rotate(0, 180, 0);
+            AnimateFloatingDisplay();
         }
 
         // Pulse animation when weapon is available
@@ -104,9 +116,13 @@ public class WeaponUIDisplay : MonoBehaviour
     {
         if (localKart != null) return;
 
-        if (NetworkClient.localPlayer != null)
+        if (NetworkManager.Singleton != null && NetworkManager.Singleton.LocalClient != null && NetworkManager.Singleton.LocalClient.PlayerObject != null)
         {
-            localKart = NetworkClient.localPlayer.GetComponent<MirrorKartController>();
+            localKart = NetworkManager.Singleton.LocalClient.PlayerObject.GetComponent<MirrorKartController>();
+            if (localKart != null)
+            {
+                BindKartEvents();
+            }
         }
     }
 
@@ -124,14 +140,14 @@ public class WeaponUIDisplay : MonoBehaviour
 
     private void UpdateDisplay(MirrorKartController.WeaponType weapon, int ammo)
     {
-        switch (displayMode)
+        if (mode == DisplayMode.TwoDimensionalHUD || mode == DisplayMode.Both)
         {
-            case DisplayMode.Icon2D:
-                Update2DDisplay(weapon, ammo);
-                break;
-            case DisplayMode.Preview3D:
-                Update3DDisplay(weapon, ammo);
-                break;
+            Update2DDisplay(weapon, ammo);
+        }
+
+        if (mode == DisplayMode.ThreeDimensionalFloating || mode == DisplayMode.Both)
+        {
+            Update3DDisplay(weapon, ammo);
         }
     }
 
@@ -151,66 +167,86 @@ public class WeaponUIDisplay : MonoBehaviour
 
         if (ammoText != null)
         {
-            ammoText.text = ammo > 0 ? $"x{ammo}" : "";
+            ammoText.text = ammo > 0 ? ammo.ToString() : "";
+            ammoText.gameObject.SetActive(ammo > 0);
         }
 
         if (backgroundImage != null)
         {
             backgroundImage.color = weapon != MirrorKartController.WeaponType.None 
-                ? new Color(0, 0, 0, 0.7f) 
-                : new Color(0, 0, 0, 0.3f);
+                ? activeColor 
+                : emptyColor;
         }
     }
 
     private void Update3DDisplay(MirrorKartController.WeaponType weapon, int ammo)
     {
-        // Clear previous preview
+        if (floatingContainer == null) return;
+
+        // Destroy current preview
         if (current3DPreview != null)
         {
             Destroy(current3DPreview);
             current3DPreview = null;
         }
 
-        if (previewContainer == null) return;
-
-        // Create new preview
-        GameObject prefab = weapon switch
+        // Spawn new preview if we have ammo
+        if (ammo > 0)
         {
-            MirrorKartController.WeaponType.Boomerang => boomerangPreviewPrefab,
-            MirrorKartController.WeaponType.Mine => minePreviewPrefab,
-            _ => null
-        };
-
-        if (prefab != null)
-        {
-            current3DPreview = Instantiate(prefab, previewContainer);
-            current3DPreview.transform.localPosition = Vector3.zero;
-            current3DPreview.transform.localScale = Vector3.one;
-
-            // Disable colliders and scripts for preview
-            foreach (var col in current3DPreview.GetComponentsInChildren<Collider>())
+            GameObject prefabToSpawn = weapon switch
             {
-                col.enabled = false;
-            }
-            foreach (var script in current3DPreview.GetComponentsInChildren<NetworkBehaviour>())
-            {
-                Destroy(script);
-            }
-        }
+                MirrorKartController.WeaponType.Boomerang => boomerangPreviewPrefab,
+                MirrorKartController.WeaponType.Mine => minePreviewPrefab,
+                _ => null
+            };
 
-        // Update ammo text
-        if (ammoText != null)
-        {
-            ammoText.text = ammo > 0 ? $"x{ammo}" : "";
+            if (prefabToSpawn != null)
+            {
+                current3DPreview = Instantiate(prefabToSpawn, floatingContainer);
+                current3DPreview.transform.localPosition = Vector3.zero;
+                current3DPreview.transform.localRotation = Quaternion.identity;
+
+                // Disable colliders on preview
+                foreach (var col in current3DPreview.GetComponentsInChildren<Collider>())
+                {
+                    col.enabled = false;
+                }
+            }
         }
     }
 
-    /// <summary>
-    /// Set display mode at runtime
-    /// </summary>
-    public void SetDisplayMode(DisplayMode mode)
+    private void AnimateFloatingDisplay()
     {
-        displayMode = mode;
-        UpdateDisplay(lastWeapon, lastAmmo);
+        if (floatingContainer == null || current3DPreview == null) return;
+
+        // Rotate
+        floatingContainer.Rotate(Vector3.up, rotationSpeed * Time.deltaTime);
+
+        // Bob up and down
+        float newY = initialFloatingPos.y + Mathf.Sin(Time.time * floatSpeed) * floatAmount;
+        floatingContainer.localPosition = new Vector3(
+            initialFloatingPos.x,
+            newY,
+            initialFloatingPos.z
+        );
+    }
+
+    public void SetLocalKart(MirrorKartController kart)
+    {
+        localKart = kart;
+        BindKartEvents();
+    }
+
+    private void BindKartEvents()
+    {
+        if (localKart == null) return;
+
+        localKart.OnWeaponChanged += (weapon) =>
+        {
+            if (weaponSwitchSound != null && audioSource != null && weapon != MirrorKartController.WeaponType.None)
+            {
+                audioSource.PlayOneShot(weaponSwitchSound);
+            }
+        };
     }
 }

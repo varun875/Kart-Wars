@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 8d88164352d54ed8b6bc2240a78f3923
+TextScriptImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 87620
+  packageName: Progress Bar Kit
+  packageVersion: 5.0
+  assetPath: Assets/2D Progress Bar Toolkit/Documentation/Documentation.md
+  uploadId: 966816

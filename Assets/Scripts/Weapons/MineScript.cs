@@ -1,11 +1,12 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 using System.Collections;
 using System.Collections.Generic;
 
 /// <summary>
 /// Mine projectile. Arms after delay, explodes on proximity,
 /// damages nearby players, handles visuals.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 public class MineScript : NetworkBehaviour
 {
@@ -36,15 +37,21 @@ public class MineScript : NetworkBehaviour
     [SerializeField] private float ownerDetectionDelay = 3f;
 
     // Synced state
-    [SyncVar(hook = nameof(OnArmedStateChanged))]
-    private bool isArmed = false;
+    private readonly NetworkVariable<bool> isArmed = new NetworkVariable<bool>(
+        false,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar]
-    private bool isExploding = false;
+    private readonly NetworkVariable<bool> isExploding = new NetworkVariable<bool>(
+        false,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
     // Server-side tracking
     private GameObject owner;
-    private uint ownerNetId;
+    private ulong ownerClientId;
     private float spawnTime;
     private float lastBlinkTime;
     private bool lightState;
@@ -67,11 +74,11 @@ public class MineScript : NetworkBehaviour
     /// <summary>
     /// Initialize the mine with its owner (called on server)
     /// </summary>
-    [Server]
     public void Initialize(GameObject ownerObject)
     {
         owner = ownerObject;
-        ownerNetId = ownerObject.GetComponent<NetworkIdentity>().netId;
+        var netObj = ownerObject.GetComponent<NetworkObject>();
+        ownerClientId = netObj != null ? netObj.OwnerClientId : 0;
         spawnTime = Time.time;
 
         // Start arming coroutine
@@ -81,29 +88,27 @@ public class MineScript : NetworkBehaviour
         StartCoroutine(LifetimeCoroutine());
     }
 
-    [Server]
     private IEnumerator ArmingSequence()
     {
         yield return new WaitForSeconds(armingDelay);
         
-        isArmed = true;
-        RpcPlayArmSound();
+        isArmed.Value = true;
+        PlayArmSoundClientRpc();
     }
 
-    [Server]
     private IEnumerator LifetimeCoroutine()
     {
         yield return new WaitForSeconds(lifetime);
         
-        if (!isExploding)
+        if (!isExploding.Value)
         {
             // Self-destruct without explosion
-            NetworkServer.Destroy(gameObject);
+            DestroyMine();
         }
     }
 
     [ClientRpc]
-    private void RpcPlayArmSound()
+    private void PlayArmSoundClientRpc()
     {
         if (armSound != null && audioSource != null)
         {
@@ -113,11 +118,11 @@ public class MineScript : NetworkBehaviour
 
     private void Update()
     {
-        if (!isArmed) return;
+        if (!isArmed.Value) return;
 
         UpdateVisuals();
 
-        if (isServer && !isExploding)
+        if (IsServer && !isExploding.Value)
         {
             CheckForPlayers();
         }
@@ -128,15 +133,15 @@ public class MineScript : NetworkBehaviour
         // Update material
         if (mineRenderer != null)
         {
-            mineRenderer.material = isArmed ? armedMaterial : disarmedMaterial;
+            mineRenderer.material = isArmed.Value ? armedMaterial : disarmedMaterial;
         }
 
         // Blink warning light
-        if (warningLight != null && isArmed)
+        if (warningLight != null && isArmed.Value)
         {
             warningLight.enabled = true;
 
-            if (Time.time - lastBlinkTime >= 1f / blinkRate)
+            if (Time.time - lastBlinkTime >= 1f / Mathf.Max(0.1f, blinkRate))
             {
                 lastBlinkTime = Time.time;
                 lightState = !lightState;
@@ -151,19 +156,20 @@ public class MineScript : NetworkBehaviour
         }
     }
 
-    [Server]
     private void CheckForPlayers()
     {
+        if (!IsServer) return;
+
         // Get all colliders in detection range
         Collider[] colliders = Physics.OverlapSphere(transform.position, detectionRadius, playerLayer);
 
         foreach (Collider col in colliders)
         {
-            NetworkIdentity identity = col.GetComponentInParent<NetworkIdentity>();
-            if (identity == null) continue;
+            NetworkObject netObj = col.GetComponentInParent<NetworkObject>();
+            if (netObj == null) continue;
 
             // Check if this is the owner
-            if (identity.netId == ownerNetId)
+            if (netObj.OwnerClientId == ownerClientId)
             {
                 // Only detect owner after delay
                 if (!detectOwner && Time.time - spawnTime < ownerDetectionDelay)
@@ -190,20 +196,20 @@ public class MineScript : NetworkBehaviour
         }
     }
 
-    [Server]
     public void Explode()
     {
-        if (isExploding) return;
-        isExploding = true;
+        if (!IsServer) return;
+        if (isExploding.Value) return;
+        isExploding.Value = true;
 
         // Get all objects in explosion radius
         Collider[] colliders = Physics.OverlapSphere(transform.position, explosionRadius);
-        HashSet<NetworkIdentity> damagedObjects = new HashSet<NetworkIdentity>();
+        HashSet<NetworkObject> damagedObjects = new HashSet<NetworkObject>();
 
         foreach (Collider col in colliders)
         {
-            NetworkIdentity identity = col.GetComponentInParent<NetworkIdentity>();
-            if (identity != null && damagedObjects.Contains(identity))
+            NetworkObject netObj = col.GetComponentInParent<NetworkObject>();
+            if (netObj != null && damagedObjects.Contains(netObj))
             {
                 continue; // Already damaged this object
             }
@@ -219,11 +225,11 @@ public class MineScript : NetworkBehaviour
             PlayerHealth playerHealth = col.GetComponentInParent<PlayerHealth>();
             if (playerHealth != null && !playerHealth.IsDead)
             {
-                playerHealth.TakeDamage(actualDamage, ownerNetId);
+                playerHealth.TakeDamage(actualDamage, ownerClientId);
                 
-                if (identity != null)
+                if (netObj != null)
                 {
-                    damagedObjects.Add(identity);
+                    damagedObjects.Add(netObj);
                 }
             }
 
@@ -231,11 +237,11 @@ public class MineScript : NetworkBehaviour
             EnemyKart enemyKart = col.GetComponentInParent<EnemyKart>();
             if (enemyKart != null)
             {
-                enemyKart.TakeDamage(actualDamage, ownerNetId);
+                enemyKart.TakeDamage(actualDamage, (uint)ownerClientId);
                 
-                if (identity != null)
+                if (netObj != null)
                 {
-                    damagedObjects.Add(identity);
+                    damagedObjects.Add(netObj);
                 }
             }
 
@@ -248,21 +254,34 @@ public class MineScript : NetworkBehaviour
         }
 
         // Trigger explosion effect on all clients
-        RpcExplode();
+        ExplodeClientRpc();
 
         // Delayed destroy to allow effect to sync
         StartCoroutine(DestroyAfterDelay());
     }
 
-    [Server]
     private IEnumerator DestroyAfterDelay()
     {
         yield return new WaitForSeconds(0.1f);
-        NetworkServer.Destroy(gameObject);
+        DestroyMine();
+    }
+
+    private void DestroyMine()
+    {
+        if (!IsServer) return;
+
+        if (NetworkObject != null && NetworkObject.IsSpawned)
+        {
+            NetworkObject.Despawn(true);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
     }
 
     [ClientRpc]
-    private void RpcExplode()
+    private void ExplodeClientRpc()
     {
         // Play explosion sound
         if (explosionSound != null)
@@ -287,11 +306,6 @@ public class MineScript : NetworkBehaviour
         {
             warningLight.enabled = false;
         }
-    }
-
-    private void OnArmedStateChanged(bool oldValue, bool newValue)
-    {
-        // Visual update handled in Update()
     }
 
     private void OnDrawGizmosSelected()

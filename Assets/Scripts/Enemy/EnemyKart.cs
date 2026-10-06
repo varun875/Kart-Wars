@@ -1,9 +1,10 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 using System.Collections;
 
 /// <summary>
 /// Server-authoritative AI/enemy health, death/respawn logic.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 public class EnemyKart : NetworkBehaviour
 {
@@ -26,14 +27,20 @@ public class EnemyKart : NetworkBehaviour
     [SerializeField] private Transform[] waypoints;
     [SerializeField] private float waypointThreshold = 2f;
 
-    [SyncVar(hook = nameof(OnHealthChanged))]
-    private float currentHealth;
+    private readonly NetworkVariable<float> currentHealth = new NetworkVariable<float>(
+        100f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar]
-    private bool isDead = false;
+    private readonly NetworkVariable<bool> isDead = new NetworkVariable<bool>(
+        false,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    public float CurrentHealth => currentHealth;
-    public bool IsDead => isDead;
+    public float CurrentHealth => currentHealth.Value;
+    public bool IsDead => isDead.Value;
     public event System.Action<float, float> OnHealthUpdated;
     public event System.Action OnDeath;
 
@@ -49,117 +56,150 @@ public class EnemyKart : NetworkBehaviour
         spawnRotation = transform.rotation;
     }
 
-    public override void OnStartServer()
+    public override void OnNetworkSpawn()
     {
-        base.OnStartServer();
-        currentHealth = maxHealth;
+        base.OnNetworkSpawn();
+        currentHealth.OnValueChanged += OnHealthChanged;
+
+        if (IsServer)
+        {
+            currentHealth.Value = maxHealth;
+            isDead.Value = false;
+        }
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        currentHealth.OnValueChanged -= OnHealthChanged;
     }
 
     private void Update()
     {
-        if (!isServer || isDead || !isAI) return;
-        UpdateAI();
+        if (!IsServer || isDead.Value || !isAI) return;
+        HandleAIMovement();
     }
 
-    [Server]
-    private void UpdateAI()
+    private void HandleAIMovement()
     {
         if (waypoints == null || waypoints.Length == 0) return;
-        Transform target = waypoints[currentWaypointIndex];
-        if (target == null) return;
 
-        Vector3 dir = (target.position - transform.position).normalized;
-        dir.y = 0;
-        float dist = Vector3.Distance(transform.position, target.position);
+        Transform targetWaypoint = waypoints[currentWaypointIndex];
+        if (targetWaypoint == null) return;
 
-        if (dist < waypointThreshold)
+        Vector3 targetDirection = (targetWaypoint.position - transform.position).normalized;
+        targetDirection.y = 0;
+
+        if (targetDirection != Vector3.zero)
+        {
+            Quaternion targetRotation = Quaternion.LookRotation(targetDirection);
+            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, turnSpeed * Time.deltaTime);
+        }
+
+        transform.position += transform.forward * moveSpeed * Time.deltaTime;
+
+        if (Vector3.Distance(transform.position, targetWaypoint.position) < waypointThreshold)
         {
             currentWaypointIndex = (currentWaypointIndex + 1) % waypoints.Length;
-            return;
         }
-
-        if (dir != Vector3.zero)
-        {
-            Quaternion targetRot = Quaternion.LookRotation(dir);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRot, turnSpeed * Time.deltaTime);
-        }
-
-        if (rb != null) rb.linearVelocity = transform.forward * moveSpeed;
-        else transform.position += transform.forward * moveSpeed * Time.deltaTime;
     }
 
-    [Server]
-    public void TakeDamage(float damage, uint attackerNetId)
+    public void TakeDamage(float damage, uint killerNetId)
     {
-        if (isDead) return;
-        currentHealth = Mathf.Max(0, currentHealth - damage);
-        RpcPlayHitEffect();
-        if (currentHealth <= 0) Die(attackerNetId);
+        if (!IsServer || isDead.Value) return;
+
+        currentHealth.Value = Mathf.Max(0, currentHealth.Value - damage);
+        PlayHitEffectClientRpc();
+
+        if (currentHealth.Value <= 0)
+        {
+            Die(killerNetId);
+        }
     }
 
     [ClientRpc]
-    private void RpcPlayHitEffect()
+    private void PlayHitEffectClientRpc()
     {
-        if (hitSound != null) AudioSource.PlayClipAtPoint(hitSound, transform.position);
+        if (hitSound != null)
+        {
+            AudioSource.PlayClipAtPoint(hitSound, transform.position);
+        }
     }
 
-    [Server]
     private void Die(uint killerNetId)
     {
-        if (isDead) return;
-        isDead = true;
+        if (!IsServer || isDead.Value) return;
+        isDead.Value = true;
 
         if (MirrorGameMaster.Instance != null)
+        {
             MirrorGameMaster.Instance.AddScore(killerNetId, scoreValue);
+        }
 
-        RpcPlayDeathEffect();
-        if (rb != null) { rb.isKinematic = true; rb.linearVelocity = Vector3.zero; }
-        if (canRespawn) StartCoroutine(RespawnCoroutine());
-        else StartCoroutine(DestroyAfterDelay());
+        OnDeathClientRpc();
+
+        if (canRespawn)
+        {
+            StartCoroutine(RespawnCoroutine());
+        }
     }
 
     [ClientRpc]
-    private void RpcPlayDeathEffect()
+    private void OnDeathClientRpc()
     {
-        if (deathSound != null) AudioSource.PlayClipAtPoint(deathSound, transform.position);
-        if (deathEffectPrefab != null) Destroy(Instantiate(deathEffectPrefab, transform.position, Quaternion.identity), 3f);
-        foreach (var r in meshRenderers) if (r != null) r.enabled = false;
+        if (deathSound != null)
+        {
+            AudioSource.PlayClipAtPoint(deathSound, transform.position);
+        }
+
+        if (deathEffectPrefab != null)
+        {
+            GameObject effect = Instantiate(deathEffectPrefab, transform.position, Quaternion.identity);
+            Destroy(effect, 3f);
+        }
+
+        if (meshRenderers != null)
+        {
+            foreach (var r in meshRenderers)
+                if (r != null) r.enabled = false;
+        }
+
+        if (rb != null) rb.isKinematic = true;
+
         OnDeath?.Invoke();
     }
 
-    [Server]
     private IEnumerator RespawnCoroutine()
     {
         yield return new WaitForSeconds(respawnDelay);
-        Respawn();
-    }
 
-    [Server]
-    private IEnumerator DestroyAfterDelay()
-    {
-        yield return new WaitForSeconds(2f);
-        NetworkServer.Destroy(gameObject);
-    }
-
-    [Server]
-    public void Respawn()
-    {
-        currentHealth = maxHealth;
-        isDead = false;
-        transform.SetPositionAndRotation(spawnPosition, spawnRotation);
-        if (rb != null) { rb.isKinematic = false; rb.linearVelocity = Vector3.zero; }
+        currentHealth.Value = maxHealth;
+        isDead.Value = false;
+        transform.position = spawnPosition;
+        transform.rotation = spawnRotation;
         currentWaypointIndex = 0;
-        RpcOnRespawn();
+
+        if (rb != null)
+        {
+            rb.isKinematic = false;
+            rb.linearVelocity = Vector3.zero;
+        }
+
+        OnRespawnClientRpc();
     }
 
     [ClientRpc]
-    private void RpcOnRespawn()
+    private void OnRespawnClientRpc()
     {
-        foreach (var r in meshRenderers) if (r != null) r.enabled = true;
+        if (meshRenderers != null)
+        {
+            foreach (var r in meshRenderers)
+                if (r != null) r.enabled = true;
+        }
     }
 
-    private void OnHealthChanged(float oldHealth, float newHealth)
+    private void OnHealthChanged(float oldValue, float newValue)
     {
-        OnHealthUpdated?.Invoke(newHealth, maxHealth);
+        OnHealthUpdated?.Invoke(newValue, maxHealth);
     }
 }

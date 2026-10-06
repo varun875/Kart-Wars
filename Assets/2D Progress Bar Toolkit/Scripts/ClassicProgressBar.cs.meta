@@ -1,8 +1,7 @@
 fileFormatVersion: 2
 guid: e4cbab83af6de4bc29177592e46c24bc
-timeCreated: 1491479919
-licenseType: Store
 MonoImporter:
+  externalObjects: {}
   serializedVersion: 2
   defaultReferences: []
   executionOrder: 0
@@ -14,6 +13,6 @@ AssetOrigin:
   serializedVersion: 1
   productId: 87620
   packageName: Progress Bar Kit
-  packageVersion: 4.2
+  packageVersion: 5.0
   assetPath: Assets/2D Progress Bar Toolkit/Scripts/ClassicProgressBar.cs
-  uploadId: 557246
+  uploadId: 966816

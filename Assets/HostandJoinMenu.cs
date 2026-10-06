@@ -14,22 +14,80 @@ public class DebugToggleManager : MonoBehaviour
 
     private float deltaTime;
 
-    void Start()
+    private void Awake()
     {
-        // Load saved preferences (optional)
-        fpsToggle.isOn = PlayerPrefs.GetInt("ShowFPS", 0) == 1;
-        pingToggle.isOn = PlayerPrefs.GetInt("ShowPing", 0) == 1;
+        // Auto-discover references if not explicitly assigned in Inspector
+        if (fpsToggle == null)
+        {
+            var toggles = GetComponentsInChildren<Toggle>(true);
+            foreach (var t in toggles)
+            {
+                if (t.gameObject.name.ToLowerInvariant().Contains("fps"))
+                {
+                    fpsToggle = t;
+                    break;
+                }
+            }
+        }
 
-        // Wire up listeners
-        fpsToggle.onValueChanged.AddListener(OnFPSToggle);
-        pingToggle.onValueChanged.AddListener(OnPingToggle);
+        if (pingToggle == null)
+        {
+            var toggles = GetComponentsInChildren<Toggle>(true);
+            foreach (var t in toggles)
+            {
+                if (t.gameObject.name.ToLowerInvariant().Contains("ping"))
+                {
+                    pingToggle = t;
+                    break;
+                }
+            }
+        }
 
-        // Apply initial state
-        OnFPSToggle(fpsToggle.isOn);
-        OnPingToggle(pingToggle.isOn);
+        if (fpsDisplayText == null)
+        {
+            var texts = GetComponentsInChildren<TextMeshProUGUI>(true);
+            foreach (var txt in texts)
+            {
+                if (txt.gameObject.name.ToLowerInvariant().Contains("fps"))
+                {
+                    fpsDisplayText = txt;
+                    break;
+                }
+            }
+        }
+
+        if (pingDisplayText == null)
+        {
+            var texts = GetComponentsInChildren<TextMeshProUGUI>(true);
+            foreach (var txt in texts)
+            {
+                if (txt.gameObject.name.ToLowerInvariant().Contains("ping"))
+                {
+                    pingDisplayText = txt;
+                    break;
+                }
+            }
+        }
     }
 
-    void OnFPSToggle(bool isOn)
+    private void Start()
+    {
+        if (fpsToggle != null)
+        {
+            fpsToggle.isOn = PlayerPrefs.GetInt("ShowFPS", 0) == 1;
+            fpsToggle.onValueChanged.AddListener(OnFPSToggle);
+            OnFPSToggle(fpsToggle.isOn);
+        }
+
+        if (pingToggle != null)
+        {
+            pingToggle.isOn = PlayerPrefs.GetInt("ShowPing", 0) == 1;
+            pingToggle.onValueChanged.AddListener(OnPingToggle);
+            OnPingToggle(pingToggle.isOn);
+        }
+    }
+
+    private void OnFPSToggle(bool isOn)
     {
         if (fpsDisplayText != null)
             fpsDisplayText.gameObject.SetActive(isOn);
@@ -37,7 +95,7 @@ public class DebugToggleManager : MonoBehaviour
         PlayerPrefs.SetInt("ShowFPS", isOn ? 1 : 0);
     }
 
-    void OnPingToggle(bool isOn)
+    private void OnPingToggle(bool isOn)
     {
         if (pingDisplayText != null)
             pingDisplayText.gameObject.SetActive(isOn);
@@ -45,28 +103,30 @@ public class DebugToggleManager : MonoBehaviour
         PlayerPrefs.SetInt("ShowPing", isOn ? 1 : 0);
     }
 
-    void Update()
+    private void Update()
     {
         // FPS counter
-        if (fpsToggle.isOn && fpsDisplayText != null)
+        if (fpsToggle != null && fpsToggle.isOn && fpsDisplayText != null)
         {
             deltaTime += (Time.unscaledDeltaTime - deltaTime) * 0.1f;
             int fps = Mathf.RoundToInt(1.0f / deltaTime);
             fpsDisplayText.text = $"FPS: {fps}";
         }
 
-        // Ping counter (Mirror networking)
-        if (pingToggle.isOn && pingDisplayText != null)
+        // Ping counter (NGO)
+        if (pingToggle != null && pingToggle.isOn && pingDisplayText != null)
         {
-            // Uncomment whichever network library you use:
+            int ping = 0;
+            if (Unity.Netcode.NetworkManager.Singleton != null && Unity.Netcode.NetworkManager.Singleton.IsConnectedClient)
+            {
+                var transport = Unity.Netcode.NetworkManager.Singleton.NetworkConfig?.NetworkTransport;
+                if (transport != null)
+                {
+                    ping = (int)transport.GetCurrentRtt(Unity.Netcode.NetworkManager.ServerClientId);
+                }
+            }
 
-            // Mirror:
-            // int ping = Mathf.RoundToInt((float)Mirror.NetworkTime.rtt * 1000);
-
-            // NGO (Netcode for GameObjects):
-            // int ping = (int)(Unity.Netcode.NetworkManager.Singleton.NetworkConfig.NetworkTransport.GetCurrentRtt(0));
-
-            pingDisplayText.text = $"Ping: 00ms"; // replace with above
+            pingDisplayText.text = $"Ping: {ping}ms";
         }
     }
 }

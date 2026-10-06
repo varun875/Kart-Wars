@@ -1,9 +1,10 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 using System.Collections;
 
 /// <summary>
 /// Networked pickup spawner. Gives boomerang/mine, handles respawn and visuals.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 public class WeaponPickup : NetworkBehaviour
 {
@@ -25,13 +26,16 @@ public class WeaponPickup : NetworkBehaviour
     [SerializeField] private ParticleSystem pickupParticles;
     [SerializeField] private AudioClip pickupSound;
 
-    [SyncVar(hook = nameof(OnAvailableChanged))]
-    private bool isAvailable = true;
+    private readonly NetworkVariable<bool> isAvailable = new NetworkVariable<bool>(
+        true,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
     private Vector3 startPosition;
     private Collider pickupCollider;
 
-    public bool IsAvailable => isAvailable;
+    public bool IsAvailable => isAvailable.Value;
 
     private void Awake()
     {
@@ -39,15 +43,22 @@ public class WeaponPickup : NetworkBehaviour
         pickupCollider = GetComponent<Collider>();
     }
 
-    public override void OnStartClient()
+    public override void OnNetworkSpawn()
     {
-        base.OnStartClient();
+        base.OnNetworkSpawn();
+        isAvailable.OnValueChanged += OnAvailableChanged;
         UpdateVisuals();
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        base.OnNetworkDespawn();
+        isAvailable.OnValueChanged -= OnAvailableChanged;
     }
 
     private void Update()
     {
-        if (!isAvailable) return;
+        if (!isAvailable.Value) return;
 
         // Rotate
         if (pickupModel != null)
@@ -66,8 +77,8 @@ public class WeaponPickup : NetworkBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!isServer) return;
-        if (!isAvailable) return;
+        if (!IsServer) return;
+        if (!isAvailable.Value) return;
 
         MirrorKartController kart = other.GetComponentInParent<MirrorKartController>();
         if (kart != null)
@@ -76,24 +87,25 @@ public class WeaponPickup : NetworkBehaviour
         }
     }
 
-    [Server]
     private void GivePickup(MirrorKartController kart)
     {
+        if (!IsServer) return;
+
         // Give weapon to player
         kart.GiveWeapon(weaponType, ammoAmount);
 
         // Disable pickup
-        isAvailable = false;
+        isAvailable.Value = false;
 
         // Play pickup effect on all clients
-        RpcPlayPickupEffect();
+        PlayPickupEffectClientRpc();
 
         // Start respawn timer
         StartCoroutine(RespawnCoroutine());
     }
 
     [ClientRpc]
-    private void RpcPlayPickupEffect()
+    private void PlayPickupEffectClientRpc()
     {
         if (pickupSound != null)
         {
@@ -106,11 +118,13 @@ public class WeaponPickup : NetworkBehaviour
         }
     }
 
-    [Server]
     private IEnumerator RespawnCoroutine()
     {
         yield return new WaitForSeconds(respawnTime);
-        isAvailable = true;
+        if (IsServer)
+        {
+            isAvailable.Value = true;
+        }
     }
 
     private void OnAvailableChanged(bool oldValue, bool newValue)
@@ -122,31 +136,32 @@ public class WeaponPickup : NetworkBehaviour
     {
         if (pickupModel != null)
         {
-            pickupModel.SetActive(isAvailable);
+            pickupModel.SetActive(isAvailable.Value);
         }
 
         if (pickupCollider != null)
         {
-            pickupCollider.enabled = isAvailable;
+            pickupCollider.enabled = isAvailable.Value;
         }
 
         if (idleParticles != null)
         {
-            if (isAvailable && !idleParticles.isPlaying)
+            if (isAvailable.Value && !idleParticles.isPlaying)
             {
                 idleParticles.Play();
             }
-            else if (!isAvailable && idleParticles.isPlaying)
+            else if (!isAvailable.Value && idleParticles.isPlaying)
             {
                 idleParticles.Stop();
             }
         }
     }
 
-    private void OnDrawGizmosSelected()
+    private void OnDrawGizmos()
     {
         Gizmos.color = weaponType == MirrorKartController.WeaponType.Boomerang 
-            ? Color.blue : Color.red;
+            ? Color.cyan 
+            : Color.red;
         Gizmos.DrawWireSphere(transform.position, 1f);
     }
 }

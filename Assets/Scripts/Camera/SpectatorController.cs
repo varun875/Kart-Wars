@@ -1,7 +1,6 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 using System.Collections.Generic;
-using System.Linq;
 
 /// <summary>
 /// Spectator camera that follows and cycles through alive players.
@@ -112,19 +111,14 @@ public class SpectatorController : MonoBehaviour
     {
         alivePlayers.Clear();
         
-        var allPlayers = FindObjectsByType<PlayerHealth>(FindObjectsSortMode.None);
+        var allPlayers = FindObjectsByType<PlayerHealth>(FindObjectsInactive.Exclude);
         foreach (var player in allPlayers)
         {
-            if (!player.IsDead && player.GetComponent<NetworkIdentity>() != NetworkClient.localPlayer)
+            var netObj = player.GetComponent<NetworkObject>();
+            if (!player.IsDead && (netObj == null || !netObj.IsOwner))
             {
                 alivePlayers.Add(player);
             }
-        }
-
-        // Validate current index
-        if (alivePlayers.Count > 0)
-        {
-            currentIndex = Mathf.Clamp(currentIndex, 0, alivePlayers.Count - 1);
         }
     }
 
@@ -134,7 +128,6 @@ public class SpectatorController : MonoBehaviour
         if (alivePlayers.Count == 0) return;
 
         currentIndex = (currentIndex + 1) % alivePlayers.Count;
-        isFreeCam = false;
         UpdateSpectatingUI();
     }
 
@@ -143,34 +136,32 @@ public class SpectatorController : MonoBehaviour
         RefreshPlayerList();
         if (alivePlayers.Count == 0) return;
 
-        currentIndex--;
-        if (currentIndex < 0) currentIndex = alivePlayers.Count - 1;
-        isFreeCam = false;
+        currentIndex = (currentIndex - 1 + alivePlayers.Count) % alivePlayers.Count;
         UpdateSpectatingUI();
     }
 
     private void ToggleFreeCam()
     {
         isFreeCam = !isFreeCam;
-
         if (isFreeCam && spectatorCamera != null)
         {
             freeCamPosition = spectatorCamera.transform.position;
             freeCamRotation = spectatorCamera.transform.rotation;
         }
-
         UpdateSpectatingUI();
     }
 
     private void FollowCurrentPlayer()
     {
-        RefreshPlayerList();
-        if (alivePlayers.Count == 0 || spectatorCamera == null) return;
+        if (alivePlayers.Count == 0)
+        {
+            RefreshPlayerList();
+            if (alivePlayers.Count == 0) return;
+        }
 
         if (currentIndex >= alivePlayers.Count)
         {
             currentIndex = 0;
-            UpdateSpectatingUI();
         }
 
         PlayerHealth target = alivePlayers[currentIndex];
@@ -181,69 +172,56 @@ public class SpectatorController : MonoBehaviour
         }
 
         Transform targetTransform = target.transform;
-
-        // Calculate desired camera position
-        Vector3 targetPos = targetTransform.position 
-            - targetTransform.forward * followDistance 
-            + Vector3.up * followHeight;
-
-        Vector3 lookAtPos = targetTransform.position 
-            + targetTransform.forward * lookAheadDistance 
-            + Vector3.up * 1.5f;
-
-        // Smooth follow
-        spectatorCamera.transform.position = Vector3.Lerp(
-            spectatorCamera.transform.position, targetPos, smoothSpeed * Time.deltaTime);
-
-        Quaternion targetRot = Quaternion.LookRotation(lookAtPos - spectatorCamera.transform.position);
-        spectatorCamera.transform.rotation = Quaternion.Slerp(
-            spectatorCamera.transform.rotation, targetRot, smoothSpeed * Time.deltaTime);
+        Vector3 desiredPosition = targetTransform.position - targetTransform.forward * followDistance + Vector3.up * followHeight;
+        
+        if (spectatorCamera != null)
+        {
+            spectatorCamera.transform.position = Vector3.Lerp(spectatorCamera.transform.position, desiredPosition, Time.deltaTime * smoothSpeed);
+            Vector3 lookTarget = targetTransform.position + targetTransform.forward * lookAheadDistance;
+            spectatorCamera.transform.LookAt(lookTarget);
+        }
     }
 
     private void UpdateFreeCam()
     {
         if (spectatorCamera == null) return;
 
-        // WASD movement
+        float moveSpeed = 15f;
+        float rotSpeed = 3f;
+
         float h = Input.GetAxis("Horizontal");
         float v = Input.GetAxis("Vertical");
-        float ud = 0f;
-        if (Input.GetKey(KeyCode.Q)) ud = -1f;
-        if (Input.GetKey(KeyCode.E)) ud = 1f;
 
-        Vector3 move = new Vector3(h, ud, v) * 10f * Time.deltaTime;
-        freeCamPosition += spectatorCamera.transform.TransformDirection(move);
+        Vector3 move = (spectatorCamera.transform.forward * v + spectatorCamera.transform.right * h) * moveSpeed * Time.deltaTime;
+        freeCamPosition += move;
+        spectatorCamera.transform.position = freeCamPosition;
 
-        // Mouse look
         if (Input.GetMouseButton(1))
         {
-            float mouseX = Input.GetAxis("Mouse X") * 3f;
-            float mouseY = Input.GetAxis("Mouse Y") * 3f;
-            freeCamRotation *= Quaternion.Euler(-mouseY, mouseX, 0f);
+            float mouseX = Input.GetAxis("Mouse X") * rotSpeed;
+            float mouseY = -Input.GetAxis("Mouse Y") * rotSpeed;
+            freeCamRotation = Quaternion.Euler(freeCamRotation.eulerAngles.x + mouseY, freeCamRotation.eulerAngles.y + mouseX, 0);
+            spectatorCamera.transform.rotation = freeCamRotation;
         }
-
-        spectatorCamera.transform.position = freeCamPosition;
-        spectatorCamera.transform.rotation = freeCamRotation;
     }
 
     private void UpdateSpectatingUI()
     {
         if (spectatingText == null) return;
 
-        spectatingText.gameObject.SetActive(true);
-
         if (isFreeCam)
         {
-            spectatingText.text = "Free Cam (F to toggle)";
+            spectatingText.text = "Free Camera (WASD to move, Right Mouse to look)";
         }
-        else if (alivePlayers.Count > 0 && currentIndex < alivePlayers.Count)
+        else if (alivePlayers.Count > 0 && currentIndex < alivePlayers.Count && alivePlayers[currentIndex] != null)
         {
-            string playerName = alivePlayers[currentIndex].name;
-            spectatingText.text = $"Spectating: {playerName} (← →)";
+            spectatingText.text = $"Spectating Player ({currentIndex + 1}/{alivePlayers.Count})";
         }
         else
         {
-            spectatingText.text = "No players to spectate";
+            spectatingText.text = "Waiting for players...";
         }
+
+        spectatingText.gameObject.SetActive(true);
     }
 }

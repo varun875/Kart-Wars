@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEditor;
 
 namespace AiryUI
@@ -738,7 +738,7 @@ namespace AiryUI
 
         private void SaveInspectorValues()
         {
-            foreach (var id in Selection.instanceIDs)
+            foreach (var id in Selection.entityIds)
             {
                 EditorPrefs.SetInt("airyui/" + nameof(currentTabIndex), currentTabIndex);
 

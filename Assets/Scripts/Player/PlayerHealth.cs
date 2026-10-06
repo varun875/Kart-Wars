@@ -1,9 +1,10 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 using System.Collections;
 
 /// <summary>
 /// Networked player health, death state, respawn flow, component disabling.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 public class PlayerHealth : NetworkBehaviour
 {
@@ -20,18 +21,27 @@ public class PlayerHealth : NetworkBehaviour
     [Header("Components to Disable on Death")]
     [SerializeField] private MonoBehaviour[] componentsToDisable;
 
-    [SyncVar(hook = nameof(OnHealthChanged))]
-    private float currentHealth;
+    private readonly NetworkVariable<float> currentHealth = new NetworkVariable<float>(
+        100f,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar(hook = nameof(OnDeadStateChanged))]
-    private bool isDead = false;
+    private readonly NetworkVariable<bool> isDead = new NetworkVariable<bool>(
+        false,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    [SyncVar]
-    private uint lastAttackerNetId;
+    private readonly NetworkVariable<ulong> lastAttackerClientId = new NetworkVariable<ulong>(
+        0,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
-    public float CurrentHealth => currentHealth;
+    public float CurrentHealth => currentHealth.Value;
     public float MaxHealth => maxHealth;
-    public bool IsDead => isDead;
+    public bool IsDead => isDead.Value;
     public float RespawnTime => respawnTime;
 
     public event System.Action<float, float> OnHealthUpdated;
@@ -47,35 +57,51 @@ public class PlayerHealth : NetworkBehaviour
         rb = GetComponent<Rigidbody>();
     }
 
-    public override void OnStartServer()
+    public override void OnNetworkSpawn()
     {
-        base.OnStartServer();
-        currentHealth = maxHealth;
+        base.OnNetworkSpawn();
+
+        currentHealth.OnValueChanged += OnHealthChanged;
+        isDead.OnValueChanged += OnDeadStateChanged;
+
+        if (IsServer)
+        {
+            currentHealth.Value = maxHealth;
+            isDead.Value = false;
+        }
+
+        OnHealthUpdated?.Invoke(currentHealth.Value, maxHealth);
     }
 
-    public override void OnStartClient()
+    public override void OnNetworkDespawn()
     {
-        base.OnStartClient();
-        OnHealthUpdated?.Invoke(currentHealth, maxHealth);
+        base.OnNetworkDespawn();
+        currentHealth.OnValueChanged -= OnHealthChanged;
+        isDead.OnValueChanged -= OnDeadStateChanged;
     }
 
-    [Server]
-    public void TakeDamage(float damage, uint attackerNetId)
+    public void TakeDamage(float damage, ulong attackerClientId)
     {
-        if (isDead) return;
+        if (!IsServer) return;
+        if (isDead.Value) return;
 
         var invuln = GetComponent<TemporaryInvulnerability>();
         if (invuln != null && invuln.IsInvulnerable) return;
 
-        lastAttackerNetId = attackerNetId;
-        currentHealth = Mathf.Max(0, currentHealth - damage);
-        RpcPlayHitEffect();
+        lastAttackerClientId.Value = attackerClientId;
+        currentHealth.Value = Mathf.Max(0, currentHealth.Value - damage);
+        PlayHitEffectClientRpc();
 
-        if (currentHealth <= 0) Die();
+        if (currentHealth.Value <= 0) Die();
+    }
+
+    public void TakeDamage(float damage, uint attackerNetId)
+    {
+        TakeDamage(damage, (ulong)attackerNetId);
     }
 
     [ClientRpc]
-    private void RpcPlayHitEffect()
+    private void PlayHitEffectClientRpc()
     {
         if (hitSound != null)
             AudioSource.PlayClipAtPoint(hitSound, transform.position);
@@ -85,10 +111,12 @@ public class PlayerHealth : NetworkBehaviour
 
     private IEnumerator FlashRed()
     {
+        if (meshRenderers == null || meshRenderers.Length == 0) yield break;
+
         Color[] orig = new Color[meshRenderers.Length];
         for (int i = 0; i < meshRenderers.Length; i++)
         {
-            if (meshRenderers[i] != null)
+            if (meshRenderers[i] != null && meshRenderers[i].material != null)
             {
                 orig[i] = meshRenderers[i].material.color;
                 meshRenderers[i].material.color = Color.red;
@@ -96,26 +124,28 @@ public class PlayerHealth : NetworkBehaviour
         }
         yield return new WaitForSeconds(0.1f);
         for (int i = 0; i < meshRenderers.Length; i++)
-            if (meshRenderers[i] != null)
+        {
+            if (meshRenderers[i] != null && meshRenderers[i].material != null)
                 meshRenderers[i].material.color = orig[i];
+        }
     }
 
-    [Server]
     private void Die()
     {
-        if (isDead) return;
-        isDead = true;
+        if (!IsServer) return;
+        if (isDead.Value) return;
+        isDead.Value = true;
 
         if (MirrorGameMaster.Instance != null)
         {
-            MirrorGameMaster.Instance.AddKill(lastAttackerNetId, netId);
+            MirrorGameMaster.Instance.AddKill((uint)lastAttackerClientId.Value, (uint)OwnerClientId);
         }
 
-        RpcOnDeath();
+        OnDeathClientRpc();
     }
 
     [ClientRpc]
-    private void RpcOnDeath()
+    private void OnDeathClientRpc()
     {
         if (deathSound != null)
             AudioSource.PlayClipAtPoint(deathSound, transform.position);
@@ -123,13 +153,16 @@ public class PlayerHealth : NetworkBehaviour
         if (deathEffectPrefab != null)
             Destroy(Instantiate(deathEffectPrefab, transform.position, Quaternion.identity), 3f);
 
-        foreach (var r in meshRenderers)
-            if (r != null) r.enabled = false;
+        if (meshRenderers != null)
+        {
+            foreach (var r in meshRenderers)
+                if (r != null) r.enabled = false;
+        }
 
         DisableComponents();
         OnDeath?.Invoke();
 
-        if (isLocalPlayer)
+        if (IsOwner)
         {
             var respawnUI = FindAnyObjectByType<RespawnUI>();
             if (respawnUI != null)
@@ -140,31 +173,38 @@ public class PlayerHealth : NetworkBehaviour
     private void DisableComponents()
     {
         if (kartController != null) kartController.DisableControls();
-        foreach (var c in componentsToDisable)
-            if (c != null) c.enabled = false;
+        if (componentsToDisable != null)
+        {
+            foreach (var c in componentsToDisable)
+                if (c != null) c.enabled = false;
+        }
         if (rb != null) { rb.isKinematic = true; rb.linearVelocity = Vector3.zero; }
     }
 
-    [Server]
     public void Respawn(Vector3 pos, Quaternion rot)
     {
-        currentHealth = maxHealth;
-        isDead = false;
+        if (!IsServer) return;
+
+        currentHealth.Value = maxHealth;
+        isDead.Value = false;
 
         transform.SetPositionAndRotation(pos, rot);
         if (rb != null) { rb.isKinematic = false; rb.linearVelocity = Vector3.zero; }
 
-        RpcOnRespawn();
+        OnRespawnClientRpc();
 
         var invuln = GetComponent<TemporaryInvulnerability>();
         if (invuln != null) invuln.StartInvulnerability();
     }
 
     [ClientRpc]
-    private void RpcOnRespawn()
+    private void OnRespawnClientRpc()
     {
-        foreach (var r in meshRenderers)
-            if (r != null) r.enabled = true;
+        if (meshRenderers != null)
+        {
+            foreach (var r in meshRenderers)
+                if (r != null) r.enabled = true;
+        }
 
         EnableComponents();
         OnRespawned?.Invoke();
@@ -172,16 +212,19 @@ public class PlayerHealth : NetworkBehaviour
 
     private void EnableComponents()
     {
-        if (kartController != null) kartController.EnableControls();
-        foreach (var c in componentsToDisable)
-            if (c != null) c.enabled = true;
+        if (kartController != null && IsOwner) kartController.EnableControls();
+        if (componentsToDisable != null)
+        {
+            foreach (var c in componentsToDisable)
+                if (c != null) c.enabled = true;
+        }
     }
 
-    [Server]
     public void Heal(float amount)
     {
-        if (isDead) return;
-        currentHealth = Mathf.Min(currentHealth + amount, maxHealth);
+        if (!IsServer) return;
+        if (isDead.Value) return;
+        currentHealth.Value = Mathf.Min(currentHealth.Value + amount, maxHealth);
     }
 
     private void OnHealthChanged(float oldVal, float newVal)

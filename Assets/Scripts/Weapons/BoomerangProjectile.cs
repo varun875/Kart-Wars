@@ -1,9 +1,10 @@
 using UnityEngine;
-using Mirror;
+using Unity.Netcode;
 
 /// <summary>
 /// Server-side boomerang logic. Moves, curves, returns to owner, 
 /// damages players, and despawns.
+/// Uses Netcode for GameObjects (NGO).
 /// </summary>
 [RequireComponent(typeof(Rigidbody))]
 public class BoomerangProjectile : NetworkBehaviour
@@ -29,12 +30,15 @@ public class BoomerangProjectile : NetworkBehaviour
     [SerializeField] private ParticleSystem hitParticles;
 
     // Synced state
-    [SyncVar]
-    private bool isReturning = false;
+    private readonly NetworkVariable<bool> isReturning = new NetworkVariable<bool>(
+        false,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
 
     // Server-side tracking
     private GameObject owner;
-    private uint ownerNetId;
+    private ulong ownerClientId;
     private Vector3 initialPosition;
     private Vector3 moveDirection;
     private float curveDirection = 1f;
@@ -76,11 +80,11 @@ public class BoomerangProjectile : NetworkBehaviour
     /// <summary>
     /// Initialize boomerang with owner and direction (called on server)
     /// </summary>
-    [Server]
     public void Initialize(GameObject ownerObject, Vector3 direction)
     {
         owner = ownerObject;
-        ownerNetId = ownerObject.GetComponent<NetworkIdentity>().netId;
+        var netObj = ownerObject.GetComponent<NetworkObject>();
+        ownerClientId = netObj != null ? netObj.OwnerClientId : 0;
         initialPosition = transform.position;
         moveDirection = direction.normalized;
         
@@ -98,9 +102,9 @@ public class BoomerangProjectile : NetworkBehaviour
 
     private void FixedUpdate()
     {
-        if (!isServer) return;
+        if (!IsServer) return;
 
-        if (isReturning)
+        if (isReturning.Value)
         {
             MoveTowardsOwner();
         }
@@ -116,14 +120,15 @@ public class BoomerangProjectile : NetworkBehaviour
         }
     }
 
-    [Server]
     private void MoveForward()
     {
+        if (!IsServer) return;
+
         // Check if we should return
         float distanceTraveled = Vector3.Distance(transform.position, initialPosition);
         if (distanceTraveled >= maxDistance)
         {
-            isReturning = true;
+            isReturning.Value = true;
             return;
         }
 
@@ -141,9 +146,10 @@ public class BoomerangProjectile : NetworkBehaviour
         }
     }
 
-    [Server]
     private void MoveTowardsOwner()
     {
+        if (!IsServer) return;
+
         if (owner == null)
         {
             DestroyBoomerang();
@@ -165,16 +171,15 @@ public class BoomerangProjectile : NetworkBehaviour
         }
     }
 
-    [Server]
     private void CatchBoomerang()
     {
-        // Could give ammo back, trigger pickup sound, etc.
-        RpcPlayCatchEffect();
+        if (!IsServer) return;
+        PlayCatchEffectClientRpc();
         DestroyBoomerang();
     }
 
     [ClientRpc]
-    private void RpcPlayCatchEffect()
+    private void PlayCatchEffectClientRpc()
     {
         if (hitSound != null)
         {
@@ -184,15 +189,15 @@ public class BoomerangProjectile : NetworkBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        if (!isServer) return;
+        if (!IsServer) return;
         if (hasHitPlayer) return;
 
         // Ignore owner
-        NetworkIdentity otherIdentity = other.GetComponentInParent<NetworkIdentity>();
-        if (otherIdentity != null && otherIdentity.netId == ownerNetId)
+        NetworkObject otherNetObj = other.GetComponentInParent<NetworkObject>();
+        if (otherNetObj != null && otherNetObj.OwnerClientId == ownerClientId)
         {
             // If returning and hit owner, catch it
-            if (isReturning)
+            if (isReturning.Value)
             {
                 CatchBoomerang();
             }
@@ -204,7 +209,7 @@ public class BoomerangProjectile : NetworkBehaviour
         if (playerHealth != null && !playerHealth.IsDead)
         {
             // Apply damage
-            playerHealth.TakeDamage(damage, ownerNetId);
+            playerHealth.TakeDamage(damage, ownerClientId);
             
             // Apply knockback
             Rigidbody targetRb = other.GetComponentInParent<Rigidbody>();
@@ -215,10 +220,10 @@ public class BoomerangProjectile : NetworkBehaviour
             }
 
             hasHitPlayer = true;
-            RpcPlayHitEffect(other.ClosestPoint(transform.position));
+            PlayHitEffectClientRpc(other.ClosestPoint(transform.position));
 
             // Return to owner after hitting
-            isReturning = true;
+            isReturning.Value = true;
             return;
         }
 
@@ -226,24 +231,24 @@ public class BoomerangProjectile : NetworkBehaviour
         EnemyKart enemyKart = other.GetComponentInParent<EnemyKart>();
         if (enemyKart != null)
         {
-            enemyKart.TakeDamage(damage, ownerNetId);
+            enemyKart.TakeDamage(damage, (uint)ownerClientId);
             
             hasHitPlayer = true;
-            RpcPlayHitEffect(other.ClosestPoint(transform.position));
-            isReturning = true;
+            PlayHitEffectClientRpc(other.ClosestPoint(transform.position));
+            isReturning.Value = true;
             return;
         }
 
         // Hit environment - bounce back
-        if (!other.isTrigger && other.GetComponentInParent<NetworkIdentity>() == null)
+        if (!other.isTrigger && other.GetComponentInParent<NetworkObject>() == null)
         {
-            RpcPlayHitEffect(other.ClosestPoint(transform.position));
-            isReturning = true;
+            PlayHitEffectClientRpc(other.ClosestPoint(transform.position));
+            isReturning.Value = true;
         }
     }
 
     [ClientRpc]
-    private void RpcPlayHitEffect(Vector3 hitPosition)
+    private void PlayHitEffectClientRpc(Vector3 hitPosition)
     {
         if (hitSound != null)
         {
@@ -256,19 +261,28 @@ public class BoomerangProjectile : NetworkBehaviour
         }
     }
 
-    [Server]
     private void DestroyBoomerang()
     {
+        if (!IsServer) return;
+
         if (trailParticles != null)
         {
             trailParticles.Stop();
         }
 
-        NetworkServer.Destroy(gameObject);
+        if (NetworkObject != null && NetworkObject.IsSpawned)
+        {
+            NetworkObject.Despawn(true);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
     }
 
-    private void OnDestroy()
+    public override void OnDestroy()
     {
+        base.OnDestroy();
         if (audioSource != null)
         {
             audioSource.Stop();

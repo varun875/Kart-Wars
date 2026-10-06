@@ -13,5 +13,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: UnityEditor.MultiplayerModule.dll::UnityEditor.Multiplayer.Internal.MultiplayerRolesSettings
   m_MultiplayerRoleForClassicProfile:
-    m_Keys: []
-    m_Values: 
+    m_Keys:
+    - 0d2129357eac403d8b359c2dcbf82502
+    m_Values: 03000000i

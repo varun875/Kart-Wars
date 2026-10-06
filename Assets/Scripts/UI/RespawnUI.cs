@@ -1,7 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using Mirror;
 
 /// <summary>
 /// Local respawn UI with countdown, watch toggle, and input-triggered respawn.
@@ -149,7 +148,7 @@ public class RespawnUI : MonoBehaviour
         RespawnManager manager = RespawnManager.Instance;
         if (manager != null)
         {
-            manager.CmdRequestRespawn();
+            manager.RequestRespawnServerRpc();
         }
     }
 

@@ -125,21 +125,48 @@ public class MirrorKartController : NetworkBehaviour
 
     public override void OnNetworkSpawn()
     {
+        base.OnNetworkSpawn();
+
         currentWeapon.OnValueChanged += OnCurrentWeaponChanged;
         boomerangAmmo.OnValueChanged += (old, newVal) => OnBoomerangAmmoChanged?.Invoke(newVal);
         mineAmmo.OnValueChanged += (old, newVal) => OnMineAmmoChanged?.Invoke(newVal);
 
-        if (!IsOwner) return;
-
         Camera playerCamera = GetComponentInChildren<Camera>(true);
-        if (playerCamera != null)
-            playerCamera.gameObject.SetActive(true);
-
         AudioListener listener = GetComponentInChildren<AudioListener>(true);
-        if (listener != null)
-            listener.enabled = true;
+        var cinemachineCamera = GetComponentInChildren<Unity.Cinemachine.CinemachineCamera>(true);
 
-        lastValidPosition = transform.position;
+        if (IsOwner)
+        {
+            // Owner instance: enable local-only components
+            if (playerCamera != null)
+                playerCamera.gameObject.SetActive(true);
+
+            if (listener != null)
+                listener.enabled = true;
+
+            if (cinemachineCamera != null)
+                cinemachineCamera.enabled = true;
+
+            if (rb != null)
+                rb.isKinematic = false;
+
+            lastValidPosition = transform.position;
+        }
+        else
+        {
+            // Non-owner instances: disable local-only components and let NetworkTransform sync position
+            if (playerCamera != null)
+                playerCamera.gameObject.SetActive(false);
+
+            if (listener != null)
+                listener.enabled = false;
+
+            if (cinemachineCamera != null)
+                cinemachineCamera.enabled = false;
+
+            if (rb != null)
+                rb.isKinematic = true;
+        }
     }
 
     public override void OnNetworkDespawn()

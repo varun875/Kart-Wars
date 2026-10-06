@@ -1,14 +1,10 @@
-using Mirror;
+using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.UI;        // ← For InputField, Button
-using TMPro;                 // ← ADD THIS for TextMeshPro!
+using UnityEngine.UI;
 
 public class OnlineMenu : MonoBehaviour
 {
     [Header("UI References")]
-    public InputField ipInput;      // ← Legacy InputField OR use TMP_InputField
-    public TextMeshProUGUI statusText;    // ← CHANGED from Text to TextMeshProUGUI
-    public TextMeshProUGUI publicIpText;  // ← CHANGED from Text to TextMeshProUGUI
     public Button hostButton;
     public Button joinButton;
 
@@ -16,67 +12,50 @@ public class OnlineMenu : MonoBehaviour
 
     void Start()
     {
-        networkManager = FindFirstObjectByType<NetworkManager>();
+        NetworkManagerHelper.EnsureTransport();
+        networkManager = NetworkManager.Singleton != null ? NetworkManager.Singleton : FindAnyObjectByType<NetworkManager>();
 
-        if (ipInput != null)
-            ipInput.text = "localhost";
-
-        if (publicIpText != null)
-            StartCoroutine(GetPublicIP());
-    }
-
-    System.Collections.IEnumerator GetPublicIP()
-    {
-        if (publicIpText == null) yield break;
-
-        publicIpText.text = "Getting IP...";
-
-        var www = UnityEngine.Networking.UnityWebRequest.Get("https://api.ipify.org");
-        yield return www.SendWebRequest();
-
-        if (www.result == UnityEngine.Networking.UnityWebRequest.Result.Success)
-        {
-            publicIpText.text = $"Your Public IP: {www.downloadHandler.text}";
-        }
-        else
-        {
-            publicIpText.text = "IP: Check failed (use whatismyip.com)";
-        }
+        if (hostButton != null) hostButton.onClick.AddListener(HostGame);
+        if (joinButton != null) joinButton.onClick.AddListener(JoinGame);
     }
 
     public void HostGame()
     {
-        Debug.Log("🔹 Hosting game...");
+        var navigator = FindAnyObjectByType<PanelNavigator>();
+        if (navigator != null && navigator.hostPanel != null)
+        {
+            navigator.ShowHost();
+            return;
+        }
 
-        if (statusText != null)
-            statusText.text = "Hosting... Share your Public IP with friends!";
+        Debug.Log("🔹 Hosting game...");
 
         if (hostButton != null) hostButton.interactable = false;
         if (joinButton != null) joinButton.interactable = false;
 
-        networkManager.StartHost();
+        if (networkManager == null)
+            networkManager = NetworkManagerHelper.EnsureNetworkManager();
+
+        if (networkManager != null) networkManager.StartHost();
     }
 
     public void JoinGame()
     {
-        string ip = ipInput.text.Trim();
-
-        if (string.IsNullOrEmpty(ip))
+        var navigator = FindAnyObjectByType<PanelNavigator>();
+        if (navigator != null && navigator.joinPanel != null)
         {
-            if (statusText != null)
-                statusText.text = "Enter host's Public IP!";
+            navigator.ShowJoin();
             return;
         }
 
-        Debug.Log($"🔹 Joining: {ip}");
-
-        if (statusText != null)
-            statusText.text = $"Joining: {ip}...";
+        Debug.Log("🔹 Joining game...");
 
         if (hostButton != null) hostButton.interactable = false;
         if (joinButton != null) joinButton.interactable = false;
 
-        networkManager.networkAddress = ip;
-        networkManager.StartClient();
+        if (networkManager == null)
+            networkManager = NetworkManagerHelper.EnsureNetworkManager();
+
+        if (networkManager != null) networkManager.StartClient();
     }
 }

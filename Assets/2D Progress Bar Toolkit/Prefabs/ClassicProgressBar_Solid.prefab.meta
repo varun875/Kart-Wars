@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: d75c62bccfd542ba805f087691afaec7
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 87620
+  packageName: Progress Bar Kit
+  packageVersion: 5.0
+  assetPath: Assets/2D Progress Bar Toolkit/Prefabs/ClassicProgressBar_Solid.prefab
+  uploadId: 966816

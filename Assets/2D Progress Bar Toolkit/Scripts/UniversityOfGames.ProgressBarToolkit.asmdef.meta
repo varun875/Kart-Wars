@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: b2727e2f11d74d3e812e473ae7b538f2
+AssemblyDefinitionImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 87620
+  packageName: Progress Bar Kit
+  packageVersion: 5.0
+  assetPath: Assets/2D Progress Bar Toolkit/Scripts/UniversityOfGames.ProgressBarToolkit.asmdef
+  uploadId: 966816
